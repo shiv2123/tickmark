@@ -1,0 +1,25 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Eval
+# Checkpoints and labels ARE committed - they are the record.
+# Caches are not.
+eval/.cache/
+eval/.state/*.log
+
+# macOS
+.DS_Store

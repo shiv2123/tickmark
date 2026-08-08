@@ -1,0 +1,70 @@
+name: "Tickmark"
+description: "Change-management control evidence for every pull request. SOX ITGC and SOC 2 CC8.1."
+author: "Shiv Kothari"
+
+branding:
+  icon: "check-square"
+  color: "blue"
+
+inputs:
+  policy:
+    description: "Path to the policy file."
+    required: false
+    default: ".tickmark/policy.yml"
+  github-token:
+    description: "Token used to read the PR and post the comment."
+    required: false
+    default: ${{ github.token }}
+  version:
+    description: "Version of the tickmark package to install. Pin this."
+    required: false
+    default: "0.0.1"
+  python-version:
+    description: "Python used to run the action."
+    required: false
+    default: "3.12"
+  output:
+    description: "Where to write the evidence record."
+    required: false
+    default: "tickmark-evidence.json"
+  upload-artifact:
+    description: "Upload the evidence record as a workflow artifact."
+    required: false
+    default: "true"
+
+outputs:
+  evidence_digest:
+    description: "Content address of the evidence record."
+    value: ${{ steps.run.outputs.evidence_digest }}
+  posted:
+    description: "Whether the PR comment was posted."
+    value: ${{ steps.run.outputs.posted }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: pip
+
+    - name: Install tickmark
+      shell: bash
+      run: pip install --disable-pip-version-check -q "tickmark==${{ inputs.version }}"
+
+    - name: Run tickmark
+      id: run
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        TICKMARK_POLICY: ${{ inputs.policy }}
+      run: tickmark check --output "${{ inputs.output }}"
+
+    - name: Upload evidence
+      if: inputs.upload-artifact == 'true' && hashFiles(inputs.output) != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: tickmark-evidence
+        path: ${{ inputs.output }}
+        if-no-files-found: ignore

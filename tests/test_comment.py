@@ -6,7 +6,6 @@ from tickmark.render.comment import MARKER, find_existing, render_evidence_previ
 
 from .conftest import FakeResponse
 
-
 OPS = ScopeConfig(work_item_pattern=r"(?:OPS|JIRA|CHG)-\d+")
 
 

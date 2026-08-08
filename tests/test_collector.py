@@ -169,6 +169,54 @@ class TestLinkedIssues:
         assert any(n.code == "linked_issue_unreadable" for n in collector.notices)
 
 
+class TestCommentCollection:
+    """Regression guard for self-reference.
+
+    Tickmark's comment carries an evidence digest. Collecting it puts the tool's
+    own prior output into its input, so the bundle changes on every run and the
+    digest never stabilises on an unchanged PR. That is precisely the failure
+    this project exists to prevent, and it shipped in Stage 0.
+    """
+
+    def test_own_comment_is_excluded(self, fake_session):
+        routes = {
+            "/comments": FakeResponse([
+                {"id": 1, "user": {"id": 10, "type": "User"}, "created_at": "t",
+                 "body": "a human comment"},
+                {"id": 2, "user": {"id": 41898282, "type": "Bot"}, "created_at": "t",
+                 "body": MARKER + "\nEvidence digest: `sha256:abc`"},
+            ])
+        }
+        collector, _ = make_collector(routes, fake_session)
+        comments = collector._collect_comments("repos/o/r", 42)
+        assert [c["id"] for c in comments] == [1]
+
+    def test_exclusion_is_recorded_not_silent(self, fake_session):
+        routes = {"/comments": FakeResponse([
+            {"id": 2, "user": {"id": 1, "type": "Bot"}, "created_at": "t", "body": MARKER}
+        ])}
+        collector, _ = make_collector(routes, fake_session)
+        collector._collect_comments("repos/o/r", 42)
+        assert any(n.code == "self_comment_excluded" for n in collector.notices)
+
+    def test_other_bot_comments_are_kept(self, fake_session):
+        """Only Tickmark's own output is self-reference. Other bots are evidence."""
+        routes = {"/comments": FakeResponse([
+            {"id": 3, "user": {"id": 5, "type": "Bot"}, "created_at": "t",
+             "body": "Codecov report: 91%"}
+        ])}
+        collector, _ = make_collector(routes, fake_session)
+        assert [c["id"] for c in collector._collect_comments("repos/o/r", 42)] == [3]
+
+    def test_no_notice_when_nothing_excluded(self, fake_session):
+        routes = {"/comments": FakeResponse([
+            {"id": 1, "user": {"id": 10, "type": "User"}, "created_at": "t", "body": "hi"}
+        ])}
+        collector, _ = make_collector(routes, fake_session)
+        collector._collect_comments("repos/o/r", 42)
+        assert collector.notices == []
+
+
 class TestShaping:
     def test_pr_merged_state_is_distinct_from_closed(self, fake_session):
         collector, _ = make_collector({}, fake_session)

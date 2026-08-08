@@ -12,6 +12,7 @@ from typing import Any
 
 from .. import SCHEMA_VERSION
 from ..config import Config
+from ..constants import EVIDENCE_MARKER
 from ..errors import Notice
 from .client import GitHubClient
 
@@ -69,7 +70,7 @@ class Collector:
         commits = self.client.paginate(f"{base}/pulls/{n}/commits")
         files = self.client.paginate(f"{base}/pulls/{n}/files")
         reviews = self.client.paginate(f"{base}/pulls/{n}/reviews")
-        comments = self.client.paginate(f"{base}/issues/{n}/comments")
+        comments = self._collect_comments(base, n)
 
         head_sha = (pr.get("head") or {}).get("sha")
         checks = self._collect_checks(base, head_sha)
@@ -96,7 +97,7 @@ class Collector:
             "reviews": [self._shape_review(r) for r in reviews],
             "checks": checks,
             "linked_issues": linked,
-            "comments": [self._shape_comment(c) for c in comments],
+            "comments": comments,
             "repo_config": {
                 "default_branch": repo.get("default_branch"),
                 "branch_protection": protection,
@@ -183,6 +184,33 @@ class Collector:
         }
 
     # -------------------------------------------------------------- sub-fetches
+
+    def _collect_comments(self, base: str, n: int) -> list[dict]:
+        """Issue comments, excluding Tickmark's own.
+
+        Tickmark's comment contains an evidence digest. Collecting it would put
+        the tool's previous output into its own input, so the bundle would change
+        on every run and the digest would never stabilise on an unchanged pull
+        request. Self-reference has to be cut at collection, not at rendering.
+
+        Review comments are also deliberately excluded: too noisy, and a waiver
+        should be a deliberate top-level act.
+        """
+        raw = self.client.paginate(f"{base}/issues/{n}/comments")
+        kept, dropped = [], 0
+        for c in raw:
+            if EVIDENCE_MARKER in (c.get("body") or ""):
+                dropped += 1
+                continue
+            kept.append(self._shape_comment(c))
+        if dropped:
+            self._notice(
+                "info",
+                "self_comment_excluded",
+                f"Excluded {dropped} Tickmark comment(s) from the evidence bundle to "
+                "keep the digest stable across runs.",
+            )
+        return kept
 
     def _collect_checks(self, base: str, head_sha: str | None) -> list[dict]:
         """Check runs plus legacy commit statuses.

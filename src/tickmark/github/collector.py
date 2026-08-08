@@ -92,7 +92,12 @@ class Collector:
                 "is_fork": self._is_fork(pr),
             },
             "pr": self._shape_pr(pr),
-            "commits": [self._shape_commit(c) for c in commits],
+            # enumerate() carries the API's position into the bundle. The pull
+            # request commits endpoint returns topological order, and
+            # canonicalization re-sorts the array by authored_at, so without
+            # `sequence` the branch order is destroyed and "which commits landed
+            # after this approval" becomes uncomputable.
+            "commits": [self._shape_commit(c, i) for i, c in enumerate(commits)],
             "files": [self._shape_file(f) for f in files],
             "reviews": [self._shape_review(r) for r in reviews],
             "checks": checks,
@@ -131,13 +136,25 @@ class Collector:
             "milestone": (pr.get("milestone") or {}).get("title"),
         }
 
-    def _shape_commit(self, c: dict) -> dict:
+    def _shape_commit(self, c: dict, sequence: int) -> dict:
         commit = c.get("commit") or {}
         message = commit.get("message") or ""
         subject, body = _split_message(message)
         return {
             "sha": c.get("sha"),
+            # Position in the order GitHub returned, so branch order survives
+            # the authored_at sort applied during canonicalization.
+            "sequence": sequence,
+            # Parent SHAs, deliberately NOT sorted. Parent order is semantic in
+            # git: the first parent is the branch the merge was made onto.
+            # Sorting it would silently corrupt merge-commit reasoning, and it
+            # is also what makes the commit order independently verifiable
+            # rather than merely asserted by the API.
+            "parents": [p.get("sha") for p in (c.get("parents") or []) if p.get("sha")],
             "authored_at": (commit.get("author") or {}).get("date"),
+            # Author date survives rebase, amend, and cherry-pick; commit date
+            # does not. Staleness cares about when the commit became *this*
+            # commit, so both are carried and the checks choose.
             "committed_at": (commit.get("committer") or {}).get("date"),
             "author_id": (c.get("author") or {}).get("id"),
             "committer_id": (c.get("committer") or {}).get("id"),
@@ -236,6 +253,11 @@ class Collector:
             for run in runs.get("check_runs", []):
                 out.append(
                     {
+                        # A re-run produces a second check run with the same
+                        # name for the same SHA. Without the id there is no way
+                        # to say which one is current, and no unique key to sort
+                        # on -- so identical evidence could hash differently.
+                        "id": run.get("id"),
                         "name": run.get("name"),
                         "source": "check_run",
                         "status": run.get("status"),
@@ -256,6 +278,7 @@ class Collector:
             for st in combined.get("statuses", []):
                 out.append(
                     {
+                        "id": st.get("id"),
                         "name": st.get("context"),
                         "source": "commit_status",
                         "status": "completed",

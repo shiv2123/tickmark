@@ -136,6 +136,57 @@ class TestChecks:
         collector, _ = make_collector({}, fake_session)
         assert collector._collect_checks("repos/o/r", None) == []
 
+    def test_check_run_id_is_collected(self, fake_session):
+        """A re-run produces a second check run with the same name for the same
+        SHA. Without the id there is no way to say which one is current, and the
+        required-checks control would be choosing between them arbitrarily."""
+        routes = {
+            "/check-runs": FakeResponse({"check_runs": [
+                {"id": 111, "name": "test", "status": "completed", "conclusion": "failure",
+                 "head_sha": "a", "completed_at": "2026-08-03T14:20:00Z"},
+                {"id": 222, "name": "test", "status": "completed", "conclusion": "success",
+                 "head_sha": "a", "completed_at": "2026-08-03T15:00:00Z"},
+            ]}),
+            "/status": FakeResponse({"statuses": []}),
+        }
+        collector, _ = make_collector(routes, fake_session)
+        checks = collector._collect_checks("repos/o/r", "a" * 40)
+        assert [c["id"] for c in checks] == [111, 222]
+
+
+class TestCommitShaping:
+    def test_sequence_records_the_api_position(self, fake_session):
+        """Canonicalization re-sorts commits by authored_at, so branch order has
+        to be carried explicitly or it is lost."""
+        collector, _ = make_collector({}, fake_session)
+        assert collector._shape_commit({"sha": "a", "commit": {}}, 3)["sequence"] == 3
+
+    def test_parents_collected_in_order(self, fake_session):
+        """First parent is the branch merged onto. Order is meaning, not noise."""
+        collector, _ = make_collector({}, fake_session)
+        shaped = collector._shape_commit(
+            {"sha": "m", "commit": {}, "parents": [{"sha": "first"}, {"sha": "second"}]}, 0
+        )
+        assert shaped["parents"] == ["first", "second"]
+
+    def test_missing_parents_is_empty_list_not_absent_key(self, fake_session):
+        collector, _ = make_collector({}, fake_session)
+        assert collector._shape_commit({"sha": "a", "commit": {}}, 0)["parents"] == []
+
+    def test_author_and_commit_dates_both_retained(self, fake_session):
+        """They differ after a rebase, and staleness depends on which one is
+        read. Collecting only one would decide that silently."""
+        collector, _ = make_collector({}, fake_session)
+        shaped = collector._shape_commit({
+            "sha": "a",
+            "commit": {
+                "author": {"date": "2026-08-01T00:00:00Z"},
+                "committer": {"date": "2026-08-04T00:00:00Z"},
+            },
+        }, 0)
+        assert shaped["authored_at"] == "2026-08-01T00:00:00Z"
+        assert shaped["committed_at"] == "2026-08-04T00:00:00Z"
+
 
 class TestLinkedIssues:
     def test_closing_keyword_detected(self, fake_session):

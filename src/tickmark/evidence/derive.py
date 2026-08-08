@@ -90,16 +90,62 @@ def _work_item_refs(bundle: dict, pattern: str | None) -> list[str]:
     return sorted(found)
 
 
-def _last_production_commit_at(bundle: dict, production_paths: list[str]) -> str | None:
-    """Timestamp of the newest commit, used as the staleness reference point.
+# The exact shape canonicalization guarantees. An unparseable timestamp is
+# passed through verbatim by design rather than dropped, which means a string
+# max over the raw values could return "not a date" -- lexically above any real
+# timestamp. Filtering to the canonical shape makes a mangled input yield None,
+# so a check sees "unknown" and reports INDETERMINATE instead of nonsense.
+CANONICAL_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
-    Per-file commit attribution would need one API call per commit, which is not
-    worth it: any commit in the PR after an approval makes that approval stale in
-    the sense the control cares about. Narrowing to production paths only is
-    tracked separately.
+
+def _max_stamp(commits: list[dict], field: str) -> str | None:
+    """Latest value of `field`, or None if none is usable.
+
+    String max is chronological max only because every value is fixed-width
+    ISO-8601 UTC. That invariant is enforced here, not assumed.
     """
-    stamps = [c.get("authored_at") for c in bundle.get("commits") or [] if c.get("authored_at")]
+    stamps = [c[field] for c in commits if CANONICAL_TS_RE.match(str(c.get(field) or ""))]
     return max(stamps) if stamps else None
+
+
+def _commit_order(commits: list[dict]) -> tuple[list[str], bool]:
+    """Commit SHAs in branch order, and whether that order was verifiable.
+
+    Returns (shas, verified).
+
+    Branch order is what makes staleness answerable: an approval is stale iff
+    commits landed after the SHA it was submitted against. Comparing clocks
+    instead is weaker, because git timestamps are supplied by the committer and
+    survive rebase, amend, and cherry-pick.
+
+    `sequence` carries the position GitHub returned. `parents` lets that claim be
+    checked rather than trusted: in topological order every commit after the
+    first names a parent that appeared earlier. When the walk fails -- parents
+    absent, history rewritten by a force-push, an unusual merge shape -- the
+    order is not trustworthy, and a check that depends on it must report
+    INDETERMINATE rather than guess (AGENTS.md rule 5).
+    """
+    if not commits:
+        return [], False
+
+    ordered = sorted(
+        commits, key=lambda c: (c.get("sequence") is None, c.get("sequence") or 0, c.get("sha") or "")
+    )
+    shas = [c["sha"] for c in ordered if c.get("sha")]
+
+    if len(shas) != len(commits) or any(c.get("sequence") is None for c in commits):
+        return shas, False
+
+    seen: set[str] = set()
+    verified = True
+    for i, commit in enumerate(ordered):
+        parents = commit.get("parents") or []
+        if not parents:
+            verified = False
+        elif i > 0 and not any(p in seen for p in parents):
+            verified = False
+        seen.add(commit["sha"])
+    return shas, verified
 
 
 def derive(bundle: dict, scope: ScopeConfig | None = None) -> dict:
@@ -126,11 +172,25 @@ def derive(bundle: dict, scope: ScopeConfig | None = None) -> dict:
 
     non_exempt = [p for p in paths if not matches(p, scope.exempt_paths)]
 
+    commits = bundle.get("commits") or []
+    commit_shas, order_verified = _commit_order(commits)
+
     return {
         "is_revert": _is_revert(pr),
         "author_and_co_author_ids": sorted(identities),
         "co_author_emails": sorted(co_author_emails),
-        "last_production_commit_at": _last_production_commit_at(bundle, scope.production_paths),
+        # Branch order, and whether it could be checked. The previous field here
+        # was named last_production_commit_at, took the production path list,
+        # never used it, and returned max(authored_at) over every commit. Three
+        # separate ways to mislead: the name claimed a scoping that did not
+        # happen, so a docs-only follow-up commit flipped a good approval to
+        # stale; and author date is preserved by rebase, so a rebased branch
+        # read as fresh. Names now say what the values are.
+        "commit_shas_in_order": commit_shas,
+        "commit_order_verified": order_verified,
+        "head_commit_sha": commit_shas[-1] if commit_shas else None,
+        "last_commit_at": _max_stamp(commits, "committed_at"),
+        "last_authored_at": _max_stamp(commits, "authored_at"),
         "production_paths_touched": matching(paths, scope.production_paths),
         "test_paths_touched": matching(paths, scope.test_paths),
         "exempt_paths_touched": matching(paths, scope.exempt_paths),

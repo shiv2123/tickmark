@@ -101,12 +101,42 @@ def truncate_patch(patch: str | None, max_lines: int = DEFAULT_MAX_DIFF_LINES) -
 
 
 def _sort_key(item: dict, keys: tuple[str, ...]) -> tuple:
-    """Sort tuple that tolerates None without raising on mixed comparisons."""
+    """Sort tuple that tolerates None and mixed types without raising.
+
+    Numbers compare numerically rather than as strings, so id 9 sorts before
+    id 10. Ordering is: numbers, then strings, then None.
+    """
     out: list = []
     for key in keys:
         value = item.get(key)
-        out.append((value is None, "" if value is None else str(value)))
+        if value is None:
+            out.append((2, 0.0, ""))
+        elif isinstance(value, bool):  # bool is an int subclass; keep it textual
+            out.append((1, 0.0, str(value)))
+        elif isinstance(value, (int, float)):
+            out.append((0, float(value), ""))
+        else:
+            out.append((1, 0.0, str(value)))
     return tuple(out)
+
+
+def _total_order(item: dict, keys: tuple[str, ...]) -> tuple:
+    """The declared sort key, with the item's own canonical form as final tiebreak.
+
+    Python's sort is stable, so items with equal keys keep their input order --
+    and input order here is whatever the GitHub API returned, which it does not
+    promise to hold constant. Re-running a workflow yields two check runs with
+    the same name for the same SHA; they tie on (name, source) and their
+    relative order then depends on the API. Identical evidence would hash
+    differently between runs, with no error raised. That is the same shape as
+    every bug Stage 0 shipped.
+
+    Appending the canonical form makes the ordering a function of the array's
+    contents alone. Anything that still ties is byte-identical, so its position
+    cannot affect the digest. Applied to every array rather than just `checks`,
+    because the goal is to close the failure mode, not the instance.
+    """
+    return (_sort_key(item, keys), canonical_json(item))
 
 
 def canonicalize(bundle: dict, *, max_diff_lines: int = DEFAULT_MAX_DIFF_LINES) -> dict:
@@ -139,12 +169,20 @@ def canonicalize(bundle: dict, *, max_diff_lines: int = DEFAULT_MAX_DIFF_LINES) 
         f["patch"], f["patch_truncated"] = truncate_patch(f.get("patch"), max_diff_lines)
 
     # --- array ordering
-    out["commits"] = sorted(out.get("commits") or [], key=lambda c: _sort_key(c, ("authored_at", "sha")))
-    out["files"] = sorted(out.get("files") or [], key=lambda f: _sort_key(f, ("path",)))
-    out["reviews"] = sorted(out.get("reviews") or [], key=lambda r: _sort_key(r, ("submitted_at", "id")))
-    out["checks"] = sorted(out.get("checks") or [], key=lambda c: _sort_key(c, ("name", "source")))
-    out["comments"] = sorted(out.get("comments") or [], key=lambda c: _sort_key(c, ("created_at", "id")))
-    out["linked_issues"] = sorted(out.get("linked_issues") or [], key=lambda i: _sort_key(i, ("number",)))
+    #
+    # `commits[].parents` is deliberately absent from every sort and is never
+    # itself sorted: parent order is semantic in git, and branch order is
+    # recovered from `sequence` in the derived block rather than from position
+    # in this array.
+    for key, sort_keys in (
+        ("commits", ("authored_at", "sha")),
+        ("files", ("path",)),
+        ("reviews", ("submitted_at", "id")),
+        ("checks", ("name", "source", "completed_at", "id")),
+        ("comments", ("created_at", "id")),
+        ("linked_issues", ("number",)),
+    ):
+        out[key] = sorted(out.get(key) or [], key=lambda item, k=sort_keys: _total_order(item, k))
 
     if pr.get("labels"):
         pr["labels"] = sorted(pr["labels"])

@@ -124,10 +124,101 @@ class TestCounts:
         assert out["total_additions"] == 124
         assert out["total_deletions"] == 0
 
-    def test_last_production_commit_is_the_newest(self, bundle):
-        bundle["commits"].append({**bundle["commits"][0], "sha": "d" * 40,
-                                  "authored_at": "2026-08-04T10:00:00Z"})
-        assert derive(bundle)["last_production_commit_at"] == "2026-08-04T10:00:00Z"
+
+class TestCommitTimestamps:
+    """Author date and commit date are different facts and the difference is
+    load-bearing for staleness. Author date survives rebase, amend, and
+    cherry-pick; commit date does not. A branch rebased after an approval keeps
+    its old author dates and would read as fresh."""
+
+    def test_last_commit_at_uses_commit_date_not_author_date(self, bundle):
+        bundle["commits"].append({
+            **bundle["commits"][0],
+            "sha": "d" * 40,
+            "sequence": 1,
+            "parents": ["c" * 40],
+            "authored_at": "2026-08-01T09:00:00Z",   # written earlier
+            "committed_at": "2026-08-04T10:00:00Z",  # rebased onto the branch later
+        })
+        out = derive(bundle)
+        assert out["last_commit_at"] == "2026-08-04T10:00:00Z"
+        assert out["last_authored_at"] == "2026-08-03T13:50:00Z"
+
+    def test_unparseable_timestamp_yields_none_not_garbage(self, bundle):
+        """Canonicalization passes an unparseable timestamp through verbatim.
+        A raw string max would return it, since letters sort above digits, and a
+        check would then compare against nonsense. None means unknown, and
+        unknown must reach the check as unknown."""
+        bundle["commits"][0]["committed_at"] = "not a date"
+        assert derive(bundle)["last_commit_at"] is None
+
+    def test_no_commits_yields_none(self, bundle):
+        bundle["commits"] = []
+        out = derive(bundle)
+        assert out["last_commit_at"] is None
+        assert out["head_commit_sha"] is None
+
+
+class TestCommitOrder:
+    """Branch order is what makes staleness answerable without trusting clocks.
+    Canonicalization sorts commits by authored_at, so order has to survive in
+    `sequence` and be checkable against `parents`."""
+
+    def _append(self, bundle, sha, sequence, parents, authored_at):
+        bundle["commits"].append({
+            **bundle["commits"][0],
+            "sha": sha, "sequence": sequence, "parents": parents,
+            "authored_at": authored_at, "committed_at": authored_at,
+        })
+
+    def test_order_follows_sequence_not_array_position(self, bundle):
+        self._append(bundle, "d" * 40, 1, ["c" * 40], "2026-08-04T10:00:00Z")
+        bundle["commits"].reverse()
+        out = derive(bundle)
+        assert out["commit_shas_in_order"] == ["c" * 40, "d" * 40]
+        assert out["head_commit_sha"] == "d" * 40
+
+    def test_order_survives_a_commit_authored_out_of_order(self, bundle):
+        """A cherry-picked commit carries an old author date. Sorting by
+        authored_at would put it first; branch order says otherwise."""
+        self._append(bundle, "d" * 40, 1, ["c" * 40], "2020-01-01T00:00:00Z")
+        out = derive(bundle)
+        assert out["commit_shas_in_order"] == ["c" * 40, "d" * 40]
+
+    def test_chain_verifies_when_parents_link_up(self, bundle):
+        self._append(bundle, "d" * 40, 1, ["c" * 40], "2026-08-04T10:00:00Z")
+        assert derive(bundle)["commit_order_verified"] is True
+
+    def test_merge_commit_verifies_via_first_parent(self, bundle):
+        """Merging the base branch in gives a commit with two parents, one of
+        which is outside the PR. One parent inside is enough."""
+        self._append(bundle, "d" * 40, 1, ["c" * 40, "e" * 40], "2026-08-04T10:00:00Z")
+        assert derive(bundle)["commit_order_verified"] is True
+
+    def test_broken_chain_is_reported_not_hidden(self, bundle):
+        """A parent that names nothing earlier means history was rewritten under
+        us. Unverified must be visible so the check reports INDETERMINATE."""
+        self._append(bundle, "d" * 40, 1, ["9" * 40], "2026-08-04T10:00:00Z")
+        out = derive(bundle)
+        assert out["commit_order_verified"] is False
+        assert out["commit_shas_in_order"] == ["c" * 40, "d" * 40]
+
+    def test_missing_parents_is_unverified(self, bundle):
+        """An older bundle, or a collector that could not read parents. Absence
+        of evidence must not read as a verified chain."""
+        bundle["commits"][0]["parents"] = []
+        assert derive(bundle)["commit_order_verified"] is False
+
+    def test_missing_sequence_is_unverified(self, bundle):
+        bundle["commits"][0].pop("sequence")
+        assert derive(bundle)["commit_order_verified"] is False
+
+    def test_empty_pr_is_unverified_not_vacuously_true(self, bundle):
+        """Zero commits is not a verified order. It is no order at all."""
+        bundle["commits"] = []
+        out = derive(bundle)
+        assert out["commit_order_verified"] is False
+        assert out["commit_shas_in_order"] == []
 
 
 class TestPurity:

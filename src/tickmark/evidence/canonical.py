@@ -18,6 +18,7 @@ Rules, from technical-design section 1:
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -27,18 +28,63 @@ DEFAULT_MAX_DIFF_LINES = 200
 # anything a control cares about.
 EXCLUDED_FROM_DIGEST = ("collected_at",)
 
+# ISO-8601 as actually encountered in the wild, parsed explicitly rather than
+# handed to datetime.fromisoformat.
+#
+# fromisoformat is NOT version-stable. On Python 3.10 it accepts fractional
+# seconds only at exactly 3 or 6 digits, so "2026-08-03T14:02:00.9Z" raises,
+# while 3.11+ accepts it. Depending on it means the same pull request
+# canonicalises differently on different interpreters, which produces different
+# digests for identical evidence and silently breaks the cache and the eval
+# corpus. Parsing here keeps the bundle interpreter-independent.
+_ISO_RE = re.compile(
+    r"^(?P<date>\d{4}-\d{2}-\d{2})"
+    r"[Tt ]"
+    r"(?P<hh>\d{2}):(?P<mm>\d{2})(?::(?P<ss>\d{2}))?"
+    r"(?:\.(?P<frac>\d+))?"
+    r"(?P<tz>[Zz]|[+-]\d{2}:?\d{2})?$"
+)
+
+
+def _normalize_offset(tz: str | None) -> str:
+    """Return a +HH:MM offset. Absent or Z means UTC."""
+    if not tz or tz in ("Z", "z"):
+        return "+00:00"
+    return tz if ":" in tz else f"{tz[:3]}:{tz[3:]}"
+
+
+def _parse_iso(text: str) -> datetime | None:
+    """Parse ISO-8601 without depending on interpreter-specific leniency."""
+    match = _ISO_RE.match(text.strip())
+    if not match:
+        return None
+    g = match.groupdict()
+    # Fractional seconds are discarded anyway (second precision), but they must
+    # be handled rather than causing a parse failure.
+    rebuilt = (
+        f"{g['date']}T{g['hh']}:{g['mm']}:{g['ss'] or '00'}"
+        f"{_normalize_offset(g['tz'])}"
+    )
+    try:
+        return datetime.fromisoformat(rebuilt)
+    except ValueError:
+        return None
+
 
 def normalize_timestamp(value: Any) -> str | None:
-    """ISO-8601 UTC, second precision, trailing Z. None passes through."""
+    """ISO-8601 UTC, second precision, trailing Z. None passes through.
+
+    An unparseable value is returned verbatim rather than dropped: losing a
+    timestamp silently is worse than carrying an odd one, and it stays visible
+    in the bundle for anyone reading it.
+    """
     if value in (None, ""):
         return None
     if isinstance(value, datetime):
-        dt = value
+        dt: datetime | None = value
     else:
-        text = str(value).strip().replace("Z", "+00:00")
-        try:
-            dt = datetime.fromisoformat(text)
-        except ValueError:
+        dt = _parse_iso(str(value))
+        if dt is None:
             return str(value)
     dt = dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     return dt.replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")

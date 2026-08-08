@@ -1,5 +1,7 @@
 import copy
 
+import pytest
+
 from tickmark.evidence.canonical import (
     canonical_json,
     canonicalize,
@@ -28,6 +30,50 @@ class TestNormalizeTimestamp:
 
     def test_unparseable_is_returned_verbatim_not_dropped(self):
         assert normalize_timestamp("not a date") == "not a date"
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "2026-08-03T14:02:00.1Z",
+            "2026-08-03T14:02:00.12Z",
+            "2026-08-03T14:02:00.123Z",
+            "2026-08-03T14:02:00.1234Z",
+            "2026-08-03T14:02:00.12345Z",
+            "2026-08-03T14:02:00.123456Z",
+            "2026-08-03T14:02:00.1234567Z",
+        ],
+    )
+    def test_any_fractional_precision_normalizes(self, raw):
+        """Python 3.10's fromisoformat accepts fractional seconds only at exactly
+        3 or 6 digits. Depending on it meant the same PR canonicalized differently
+        on different interpreters, producing different digests for identical
+        evidence. Regression guard: every precision must land on the same value.
+        """
+        assert normalize_timestamp(raw) == "2026-08-03T14:02:00Z"
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "2026-08-03T14:02:00Z",
+            "2026-08-03T14:02:00z",
+            "2026-08-03T14:02:00+00:00",
+            "2026-08-03T14:02:00+0000",
+            "2026-08-03T10:02:00-04:00",
+            "2026-08-03T10:02:00-0400",
+            "2026-08-03 14:02:00Z",
+            "2026-08-03t14:02:00Z",
+            "2026-08-03T14:02:00",
+        ],
+    )
+    def test_offset_and_separator_variants_agree(self, raw):
+        """All of these denote the same instant and must canonicalize identically."""
+        assert normalize_timestamp(raw) == "2026-08-03T14:02:00Z"
+
+    def test_missing_seconds_defaults_to_zero(self):
+        assert normalize_timestamp("2026-08-03T14:02Z") == "2026-08-03T14:02:00Z"
+
+    def test_fractional_with_offset_together(self):
+        assert normalize_timestamp("2026-08-03T10:02:00.9-04:00") == "2026-08-03T14:02:00Z"
 
 
 class TestTruncatePatch:

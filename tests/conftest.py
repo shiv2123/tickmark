@@ -11,7 +11,7 @@ import copy
 import pytest
 
 BASE_BUNDLE = {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "source": {
         "host": "github.com",
         "repo_id": 1324509884,
@@ -38,6 +38,8 @@ BASE_BUNDLE = {
     "commits": [
         {
             "sha": "c" * 40,
+            "sequence": 0,
+            "parents": ["b" * 40],  # the base commit
             "authored_at": "2026-08-03T13:50:00Z",
             "committed_at": "2026-08-03T13:50:00Z",
             "author_id": 100,
@@ -83,6 +85,7 @@ BASE_BUNDLE = {
     ],
     "checks": [
         {
+            "id": 5001,
             "name": "test",
             "source": "check_run",
             "status": "completed",

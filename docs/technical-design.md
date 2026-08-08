@@ -36,7 +36,7 @@ assertions read scoped subsets of it.
 
 ```jsonc
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "source": {
     "host": "github.com",
     "repo_id": 1324509884,
@@ -66,6 +66,8 @@ assertions read scoped subsets of it.
   "commits": [                             // sorted by authored_at, then sha
     {
       "sha": "c0ffee1...",
+      "sequence": 0,                       // position GitHub returned it in
+      "parents": ["e5f6a7b8..."],          // NOT sorted; parent order is semantic
       "authored_at": "2026-08-03T13:50:00Z",
       "committed_at": "2026-08-03T13:50:00Z",
       "author_id": 48875091,
@@ -102,8 +104,9 @@ assertions read scoped subsets of it.
     }
   ],
 
-  "checks": [                              // sorted by name
+  "checks": [                              // sorted by name, source, completed_at, id
     {
+      "id": 5001,                          // re-runs repeat the name; the id does not
       "name": "test",
       "status": "completed",
       "conclusion": "success",             // success|failure|neutral|cancelled|skipped|timed_out
@@ -147,7 +150,11 @@ assertions read scoped subsets of it.
   "derived": {                             // computed once, so checks stay pure and cheap
     "is_revert": false,
     "author_and_co_author_ids": [48875091],
-    "last_production_commit_at": "2026-08-03T13:50:00Z",
+    "commit_shas_in_order": ["c0ffee1..."],// branch order, recovered from `sequence`
+    "commit_order_verified": true,         // the parent chain checked out
+    "head_commit_sha": "c0ffee1...",
+    "last_commit_at": "2026-08-03T13:50:00Z",   // committer date
+    "last_authored_at": "2026-08-03T13:50:00Z", // author date
     "production_paths_touched": ["src/tickmark/checks/cm2.py"],
     "test_paths_touched": ["tests/test_cm2.py"],
     "all_files_exempt": false,
@@ -168,6 +175,23 @@ assertions read scoped subsets of it.
   them produces false findings.
 - **`comments`** carries waivers. Review comments are deliberately excluded: too noisy, and a waiver
   should be a deliberate top-level act.
+- **`commits[].sequence` and `commits[].parents`** exist because rule 2 sorts the array by
+  `authored_at`, which destroys branch order — and branch order is what makes staleness answerable
+  without trusting clocks. `sequence` carries the order; `parents` lets it be *verified* rather than
+  believed. When the chain does not walk (force-push, absent parents), `derived.commit_order_verified`
+  is false and any check depending on it reports INDETERMINATE.
+- **`checks[].id`** because a re-run produces a second check run with the same name for the same SHA.
+  Without it, "the current result for this check" has no answer, and the two entries tie in the sort.
+
+### Schema history
+
+**1.1** — added `commits[].sequence`, `commits[].parents`, `checks[].id`. Replaced
+`derived.last_production_commit_at` with `commit_shas_in_order`, `commit_order_verified`,
+`head_commit_sha`, `last_commit_at`, and `last_authored_at`. The old field took the production path
+list, never applied it, and returned `max(authored_at)`: the name claimed a scoping that did not
+happen, and author dates survive rebase. Array sorts now use the item's canonical form as a final
+tiebreak, so ordering is a function of contents rather than of API response order. No migration path
+— nothing consumed 1.0 outside this repository, and the eval corpus is not yet frozen.
 
 ---
 
@@ -253,12 +277,12 @@ This is the artifact users download, the Register ingests, and the eval compares
         {
           "id": "A2",
           "type": "deterministic",
-          "statement": "Latest approving review is at or after the last production commit.",
+          "statement": "No commit landed after the commit the approval was submitted against.",
           "verdict": "pass",
           "check": "approval_not_stale",
-          "observed": { "last_approval_at": "2026-08-04T08:12:00Z",
-                        "last_production_commit_at": "2026-08-03T13:50:00Z" },
-          "evidence_refs": ["reviews[0]", "derived.last_production_commit_at"]
+          "observed": { "approved_sha": "c0ffee1...", "head_commit_sha": "c0ffee1...",
+                        "commits_after_approval": 0, "commit_order_verified": true },
+          "evidence_refs": ["reviews[0].commit_sha", "derived.commit_shas_in_order"]
         }
       ]
     },

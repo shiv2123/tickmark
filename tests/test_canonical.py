@@ -143,6 +143,81 @@ class TestCanonicalize:
         assert out["reviews"][0]["submitted_at"] == "2026-08-04T08:12:00Z"
 
 
+class TestArrayOrdering:
+    """Regression guard for digest instability.
+
+    Python's sort is stable, so ties fall back to input order -- and input order
+    is whatever the GitHub API returned, which it does not promise to hold
+    constant. Re-running a workflow yields two check runs with the same name for
+    the same SHA, which tie on (name, source). Identical evidence would then hash
+    differently between runs, with nothing raised. Same shape as the three bugs
+    Stage 0 shipped.
+    """
+
+    CHECK = {
+        "name": "test (3.12)",
+        "source": "check_run",
+        "status": "completed",
+        "head_sha": "a" * 40,
+        "completed_at": "2026-08-03T14:20:00Z",
+    }
+
+    def test_untiebreakable_checks_still_order_deterministically(self, bundle):
+        """The hard case: same name, same source, same second, no id. Only the
+        canonical-form tiebreak can separate these."""
+        pair = [
+            {**self.CHECK, "id": None, "conclusion": "failure"},
+            {**self.CHECK, "id": None, "conclusion": "success"},
+        ]
+        forward = copy.deepcopy(bundle)
+        forward["checks"] = copy.deepcopy(pair)
+        backward = copy.deepcopy(bundle)
+        backward["checks"] = list(reversed(copy.deepcopy(pair)))
+        assert canonical_json(canonicalize(forward)) == canonical_json(canonicalize(backward))
+
+    def test_ids_sort_numerically_not_lexically(self, bundle):
+        bundle["checks"] = [
+            {**self.CHECK, "id": 10, "conclusion": "success"},
+            {**self.CHECK, "id": 9, "conclusion": "failure"},
+        ]
+        assert [c["id"] for c in canonicalize(bundle)["checks"]] == [9, 10]
+
+    def test_reviews_at_the_same_second_order_deterministically(self, bundle):
+        """Second precision means two reviews can share a timestamp. Two people
+        approving in the same second must not shuffle the bundle."""
+        base = dict(bundle["reviews"][0])
+        pair = [
+            {**base, "id": 2, "reviewer_id": 300},
+            {**base, "id": 1, "reviewer_id": 200},
+        ]
+        forward = copy.deepcopy(bundle)
+        forward["reviews"] = copy.deepcopy(pair)
+        backward = copy.deepcopy(bundle)
+        backward["reviews"] = list(reversed(copy.deepcopy(pair)))
+        assert canonical_json(canonicalize(forward)) == canonical_json(canonicalize(backward))
+
+    def test_commit_parents_are_not_sorted(self, bundle):
+        """Parent order is semantic in git: the first parent is the branch the
+        merge was made onto. Sorting it would silently corrupt merge reasoning,
+        and nothing would raise."""
+        bundle["commits"][0]["parents"] = ["f" * 40, "0" * 40]
+        assert canonicalize(bundle)["commits"][0]["parents"] == ["f" * 40, "0" * 40]
+
+    def test_sequence_survives_the_authored_at_sort(self, bundle):
+        """Canonicalization reorders commits by authored_at. Branch order has to
+        survive that, or staleness becomes uncomputable."""
+        bundle["commits"].append({
+            **bundle["commits"][0],
+            "sha": "d" * 40, "sequence": 1, "parents": ["c" * 40],
+            "authored_at": "2020-01-01T00:00:00Z",  # cherry-picked, sorts first
+        })
+        out = canonicalize(bundle)
+        assert out["commits"][0]["sha"] == "d" * 40          # authored_at order
+        assert {c["sha"]: c["sequence"] for c in out["commits"]} == {
+            "c" * 40: 0, "d" * 40: 1,                        # branch order intact
+        }
+
+
 class TestCanonicalJson:
     def test_keys_sorted_and_compact(self):
         assert canonical_json({"b": 1, "a": 2}) == '{"a":2,"b":1}'

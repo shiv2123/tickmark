@@ -7,10 +7,11 @@ is no evidence.
 
 from __future__ import annotations
 
+from ..constants import EVIDENCE_MARKER
 from ..errors import GitHubError, Notice
 from ..github.client import GitHubClient
 
-MARKER = "<!-- tickmark:evidence:v1 -->"
+MARKER = EVIDENCE_MARKER
 
 
 def render_evidence_preview(bundle: dict, digest: str, notices: list[Notice]) -> str:

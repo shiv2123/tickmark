@@ -23,6 +23,14 @@ def render_evidence_preview(bundle: dict, digest: str, notices: list[Notice]) ->
     passed = sum(1 for c in checks if c.get("conclusion") == "success")
     approvals = sum(1 for r in bundle.get("reviews") or [] if r.get("state") == "APPROVED")
 
+    # "not configured" and "none found" are different facts and must read
+    # differently. Conflating them is how an absence of evidence gets laundered
+    # into a pass.
+    if not d.get("work_item_pattern_configured"):
+        work_items = "_no pattern configured_"
+    else:
+        work_items = ", ".join(d.get("work_item_refs") or []) or "none found"
+
     lines = [
         MARKER,
         "### Tickmark — evidence collected",
@@ -38,7 +46,7 @@ def render_evidence_preview(bundle: dict, digest: str, notices: list[Notice]) ->
         f"| Approving reviews | {approvals} |",
         f"| Checks reported | {len(checks)} ({passed} success) |",
         f"| Linked issues | {len(bundle.get('linked_issues') or [])} |",
-        f"| Work item references | {', '.join(d.get('work_item_refs') or []) or 'none found'} |",
+        f"| Work item references | {work_items} |",
         f"| Revert | {'yes' if d.get('is_revert') else 'no'} |",
         f"| All files exempt | {'yes' if d.get('all_files_exempt') else 'no'} |",
         f"| Branch protection readable | {'yes' if ((bundle.get('repo_config') or {}).get('branch_protection') or {}).get('available') else 'no'} |",

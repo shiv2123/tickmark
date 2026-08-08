@@ -71,26 +71,50 @@ class TestIdentities:
 
 
 class TestWorkItemRefs:
-    def test_found_in_body(self, bundle):
-        assert "OPS-1421" in derive(bundle)["work_item_refs"]
+    """A configured pattern is required. See DEFAULT_WORK_ITEM_PATTERN for why."""
+
+    OPS = ScopeConfig(work_item_pattern=r"(?:OPS|JIRA|CHG)-\d+")
+
+    def test_no_pattern_configured_yields_nothing(self, bundle):
+        assert derive(bundle)["work_item_refs"] == []
+        assert derive(bundle)["work_item_pattern_configured"] is False
+
+    def test_found_in_body_when_configured(self, bundle):
+        assert "OPS-1421" in derive(bundle, self.OPS)["work_item_refs"]
+        assert derive(bundle, self.OPS)["work_item_pattern_configured"] is True
 
     def test_found_in_commit_message(self, bundle):
         bundle["pr"]["body"] = ""
         bundle["commits"][0]["message_subject"] = "JIRA-99 do the thing"
-        assert "JIRA-99" in derive(bundle)["work_item_refs"]
+        assert "JIRA-99" in derive(bundle, self.OPS)["work_item_refs"]
 
     def test_absent_when_nothing_matches(self, bundle):
         bundle["pr"]["body"] = "no reference here"
         bundle["pr"]["title"] = "a change"
         bundle["commits"][0]["message_subject"] = "a change"
-        assert derive(bundle)["work_item_refs"] == []
+        bundle["linked_issues"] = []
+        assert derive(bundle, self.OPS)["work_item_refs"] == []
 
     def test_deduplicated_and_sorted(self, bundle):
         bundle["pr"]["body"] = "OPS-2 and OPS-1 and OPS-2"
-        assert derive(bundle)["work_item_refs"] == ["OPS-1", "OPS-2"]
+        bundle["linked_issues"] = []
+        assert derive(bundle, self.OPS)["work_item_refs"] == ["OPS-1", "OPS-2"]
 
     def test_invalid_pattern_returns_empty_rather_than_raising(self, bundle):
         assert derive(bundle, ScopeConfig(work_item_pattern="([unclosed"))["work_item_refs"] == []
+
+    def test_permissive_pattern_matches_noise(self, bundle):
+        """Regression guard for the bug that removed the default.
+
+        A naive pattern cannot separate a ticket key from an encoding name, and
+        a control satisfied by noise launders absence of evidence into a pass.
+        """
+        loose = ScopeConfig(work_item_pattern=r"(?:[A-Z][A-Z0-9]+-\d+)")
+        bundle["pr"]["body"] = "encode as UTF-8 and hash with SHA-256"
+        bundle["pr"]["title"] = "a change"
+        bundle["commits"][0]["message_subject"] = "a change"
+        bundle["linked_issues"] = []
+        assert derive(bundle, loose)["work_item_refs"] == ["SHA-256", "UTF-8"]
 
 
 class TestCounts:

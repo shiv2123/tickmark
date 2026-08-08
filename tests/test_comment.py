@@ -1,15 +1,18 @@
 from tickmark.errors import Notice
 from tickmark.evidence.canonical import canonicalize
-from tickmark.evidence.derive import derive
+from tickmark.evidence.derive import ScopeConfig, derive
 from tickmark.github.client import GitHubClient
 from tickmark.render.comment import MARKER, find_existing, render_evidence_preview, upsert
 
 from .conftest import FakeResponse
 
 
-def prepared(bundle):
+OPS = ScopeConfig(work_item_pattern=r"(?:OPS|JIRA|CHG)-\d+")
+
+
+def prepared(bundle, scope=None):
     out = canonicalize(bundle)
-    out["derived"] = derive(out)
+    out["derived"] = derive(out, scope)
     return out
 
 
@@ -27,13 +30,21 @@ class TestRendering:
         assert "sha256:deadbeef" in body
 
     def test_includes_work_item_reference(self, bundle):
-        assert "OPS-1421" in render_evidence_preview(prepared(bundle), "d", [])
+        assert "OPS-1421" in render_evidence_preview(prepared(bundle, OPS), "d", [])
 
     def test_reports_no_work_items_explicitly(self, bundle):
         bundle["pr"]["body"] = ""
         bundle["pr"]["title"] = "a change"
         bundle["commits"][0]["message_subject"] = "a change"
-        assert "none found" in render_evidence_preview(prepared(bundle), "d", [])
+        bundle["linked_issues"] = []
+        assert "none found" in render_evidence_preview(prepared(bundle, OPS), "d", [])
+
+    def test_unconfigured_pattern_reads_differently_from_none_found(self, bundle):
+        """'not configured' and 'none found' are different facts. Conflating them
+        is how an absence of evidence gets laundered into a pass."""
+        body = render_evidence_preview(prepared(bundle), "d", [])
+        assert "no pattern configured" in body
+        assert "none found" not in body
 
     def test_notices_are_surfaced_not_swallowed(self, bundle):
         """Silent degradation is the failure mode that turns a compliance tool

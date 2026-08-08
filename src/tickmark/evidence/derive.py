@@ -24,7 +24,23 @@ DEFAULT_TEST_PATHS = [
     "**/*.spec.ts", "**/*.spec.tsx", "**/*.spec.js",
 ]
 DEFAULT_EXEMPT_PATHS = ["docs/**", "*.md", "**/*.md", "LICENSE", ".github/ISSUE_TEMPLATE/**"]
-DEFAULT_WORK_ITEM_PATTERN = r"(?:[A-Z][A-Z0-9]+-\d+)"
+
+# There is deliberately no default work-item pattern.
+#
+# A tempting default is something like r"[A-Z][A-Z0-9]+-\d+". It is wrong, and
+# wrong in the most damaging direction available to this tool. That pattern
+# matches OPS-1421, and it equally matches UTF-8, SHA-256, ISO-8601, RFC-2119,
+# CVE-2024-1234, and CM-2. No regex can separate a ticket key from any other
+# uppercase-hyphen-digit token, because they are structurally identical.
+#
+# The consequence is a false PASS on the control that establishes authorization:
+# any pull request mentioning a character encoding would appear to reference an
+# approved work item. A control that is satisfied by noise is worse than no
+# control, because it launders an absence of evidence into a pass.
+#
+# So an unconfigured pattern yields no references, and CM-1.A1 resolves to
+# NOT_APPLICABLE with a notice rather than guessing (AGENTS.md rules 5 and 6).
+DEFAULT_WORK_ITEM_PATTERN: str | None = None
 
 
 @dataclass
@@ -35,7 +51,7 @@ class ScopeConfig:
     production_paths: list[str] = field(default_factory=lambda: list(DEFAULT_PRODUCTION_PATHS))
     test_paths: list[str] = field(default_factory=lambda: list(DEFAULT_TEST_PATHS))
     exempt_paths: list[str] = field(default_factory=lambda: list(DEFAULT_EXEMPT_PATHS))
-    work_item_pattern: str = DEFAULT_WORK_ITEM_PATTERN
+    work_item_pattern: str | None = DEFAULT_WORK_ITEM_PATTERN
 
 
 def _is_revert(pr: dict) -> bool:
@@ -44,8 +60,14 @@ def _is_revert(pr: dict) -> bool:
     return bool(REVERT_TITLE_RE.match(title) or REVERT_BODY_RE.search(body))
 
 
-def _work_item_refs(bundle: dict, pattern: str) -> list[str]:
-    """Work item identifiers found anywhere a reasonable person would put one."""
+def _work_item_refs(bundle: dict, pattern: str | None) -> list[str]:
+    """Work item identifiers found anywhere a reasonable person would put one.
+
+    Returns [] when no pattern is configured. See the note on
+    DEFAULT_WORK_ITEM_PATTERN for why there is no default.
+    """
+    if not pattern:
+        return []
     try:
         regex = re.compile(pattern)
     except re.error:
@@ -115,6 +137,7 @@ def derive(bundle: dict, scope: ScopeConfig | None = None) -> dict:
         "all_files_exempt": len(paths) > 0 and len(non_exempt) == 0,
         "has_only_rename_changes": len(files) > 0 and all(f.get("is_rename_only") for f in files),
         "work_item_refs": _work_item_refs(bundle, scope.work_item_pattern),
+        "work_item_pattern_configured": bool(scope.work_item_pattern),
         "file_count": len(files),
         "total_additions": sum(f.get("additions") or 0 for f in files),
         "total_deletions": sum(f.get("deletions") or 0 for f in files),

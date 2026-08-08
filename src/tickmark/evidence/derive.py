@@ -140,9 +140,12 @@ def _commit_order(commits: list[dict]) -> tuple[list[str], bool]:
     verified = True
     for i, commit in enumerate(ordered):
         parents = commit.get("parents") or []
-        if not parents:
-            verified = False
-        elif i > 0 and not any(p in seen for p in parents):
+        # The first commit's parent is the base, which is outside the pull
+        # request, so it links back by definition. Every later commit must name
+        # a parent already seen. No parents at all means they could not be read,
+        # which is unknown rather than verified.
+        links_back = bool(parents) and (i == 0 or any(p in seen for p in parents))
+        if not links_back:
             verified = False
         seen.add(commit["sha"])
     return shas, verified

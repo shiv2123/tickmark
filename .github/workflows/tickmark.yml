@@ -1,0 +1,47 @@
+name: Tickmark (self)
+
+# Tickmark runs on its own pull requests. Dogfooding is the cheapest
+# credibility signal available, and it means every PR here carries a
+# visible example of the output.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: read
+  statuses: read
+  issues: read
+
+concurrency:
+  group: tickmark-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Installed from source rather than the published package, so this
+      # exercises the code in the PR rather than the last release.
+      - name: Install from source
+        run: pip install -e . --disable-pip-version-check -q
+
+      - name: Collect evidence
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: tickmark check --output tickmark-evidence.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tickmark-evidence
+          path: tickmark-evidence.json
+          if-no-files-found: ignore
